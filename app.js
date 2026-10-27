@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '0.6';
+const APP_VERSION = '0.7';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -517,7 +517,19 @@ function deleteAudio(L) {
 let clips = new Map(), clipsFor = '', waiters = [], preparing = '';
 function auMsg(msg) { if (current) $('#auStatus').textContent = msg || ''; }
 function waitClip(i) { return clips.has(i) ? Promise.resolve() : new Promise(r => waiters.push({ i, r })); }
-function gotClip(i, pcm) { clips.set(i, pcm); waiters = waiters.filter(w => (w.i === i ? (w.r(), false) : true)); }
+// i = -1: chờ câu bất kỳ vừa tạo xong.
+function gotClip(i, pcm) { clips.set(i, pcm); waiters = waiters.filter(w => (w.i === i || w.i === -1 ? (w.r(), false) : true)); }
+const nextClip = () => new Promise(r => waiters.push({ i: -1, r }));
+// Tốc độ tạo giọng đo thực tế trên máy này: gen = giây tạo / giây âm thanh, spc = giây âm thanh mỗi ký tự.
+const ttsStat = () => settings.ttsStat || { gen: 2.5, spc: 0.065 };
+// Bỏ khoảng lặng đầu/cuối mỗi câu (mô hình tự thêm), giữ lại 40 ms cho tự nhiên.
+function trim(c) {
+  const th = 330, m = Math.round(SR * 0.04);
+  let a = 0, b = c.length - 1;
+  while (a < b && Math.abs(c[a]) < th) a++;
+  while (b > a && Math.abs(c[b]) < th) b--;
+  return c.subarray(Math.max(0, a - m), Math.min(c.length, b + m));
+}
 async function prepareAudio(L) {
   const tag = L.id + '|' + aiVoice();
   if (!isAi() || preparing === tag) return;
@@ -540,8 +552,14 @@ async function prepareAudio(L) {
       if (!alive()) return;
       if (clips.has(i)) continue;
       auMsg(`Đang tạo giọng AI ${clips.size}/${n} câu — giữ màn hình sáng…`);
-      const pcm = await synth(L.sentences[i].en);
+      const t0 = Date.now(), pcm = await synth(L.sentences[i].en);
       if (!alive()) return;
+      // Cập nhật tốc độ tạo giọng (trung bình trượt) để biết khi nào đủ âm thanh phát liền mạch.
+      const sec = pcm.length / SR, st = ttsStat();
+      if (sec > 0.5) {
+        settings.ttsStat = { gen: st.gen * 0.7 + ((Date.now() - t0) / 1000 / sec) * 0.3, spc: st.spc * 0.7 + (sec / L.sentences[i].en.length) * 0.3 };
+        saveSettings();
+      }
       gotClip(i, pcm);
       idb('readwrite', s => s.put(pcm.buffer, tag + '|' + i)).catch(() => {});
     }
@@ -556,23 +574,42 @@ async function prepareAudio(L) {
   }
 }
 
-// Phát các câu đã có âm thanh, liền mạch từ câu `from`.
+// Âm thanh đã có liền từ câu `from` có đủ dài để phát hết trong lúc máy tạo nốt phần còn lại không.
+function bufferEnough(from) {
+  const S = current.sentences, st = ttsStat();
+  let have = 0, i = from;
+  for (; i < S.length && clips.has(i); i++) have += clips.get(i).length / SR + 0.3;
+  if (i >= S.length) return { ok: true };
+  let rest = 0;
+  for (let k = i; k < S.length; k++) if (!clips.has(k)) rest += S[k].en.length * st.spc;
+  const needGen = rest * st.gen * 1.15, playTime = have / settings.rate;
+  return { ok: playTime >= needGen, wait: Math.max(0, needGen - playTime) };
+}
+// Phát liền mạch từ câu `from`. Nếu máy tạo giọng chậm hơn tốc độ đọc, chờ tạo đủ trước
+// để không bị ngắt quãng giữa các câu.
 async function aiPlayFrom(from) {
   const id = runId;
-  if (!clips.has(from)) {
-    prepareAudio(current);
-    auMsg('Đang tạo giọng câu ' + (from + 1) + '…');
-    await waitClip(from);
+  prepareAudio(current);
+  for (;;) {
+    const b = bufferEnough(from);
+    if (b.ok) break;
+    if (!preparing) { if (!clips.has(from)) { speakSentence(true); return; } break; }
+    const done = current.sentences.filter((s, i) => clips.has(i)).length;
+    auMsg(`Đang tạo giọng AI ${done}/${current.sentences.length} câu — khoảng ${Math.max(1, Math.ceil(b.wait / 60))} phút nữa sẽ đọc liền mạch (giữ màn hình sáng)…`);
+    await Promise.race([nextClip(), sleep(5000)]);
     if (id !== runId || !playing) return;
-    if (!clips.has(from)) { speakSentence(true); return; }
   }
-  const parts = [], offs = [], gap = new Int16Array(Math.round(SR * 0.45));
+  const S = current.sentences, parts = [], offs = [];
   let t = 0;
-  for (let i = from; i < current.sentences.length && clips.has(i); i++) {
-    const c = clips.get(i);
+  for (let i = from; i < S.length && clips.has(i); i++) {
+    const c = trim(clips.get(i));
+    // Nghỉ ngắn giữa các câu trong một đoạn, dài hơn khi sang đoạn mới.
+    const gap = new Int16Array(Math.round(SR * (i + 1 < S.length && S[i + 1].p !== S[i].p ? 0.65 : 0.28)));
     offs.push({ i, start: t, end: t + c.length / SR });
     parts.push(c, gap); t += (c.length + gap.length) / SR;
   }
+  if (!offs.length) return;
+  if (!preparing || clips.size >= S.length) auMsg('');
   seg = { offs }; auMode = 'lesson'; switchedAt = Date.now();
   setAuSrc(wavUrl(parts));
   au.playbackRate = settings.rate;
@@ -582,7 +619,7 @@ async function aiPlayFrom(from) {
 }
 au.addEventListener('timeupdate', () => {
   if (auMode !== 'lesson' || !seg || !current) return;
-  const t = au.currentTime, o = seg.offs.find(x => t < x.end + 0.45) || seg.offs[seg.offs.length - 1];
+  const t = au.currentTime, o = seg.offs.filter(x => x.start <= t + 0.05).pop() || seg.offs[0];
   if (o.i !== current.pos) setPos(o.i);
   const len = current.sentences[o.i].en.length;
   markWord(t >= o.end ? -1 : Math.floor((t - o.start) / (o.end - o.start) * len));
