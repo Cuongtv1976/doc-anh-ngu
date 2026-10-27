@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '0.4';
+const APP_VERSION = '0.5';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -126,30 +126,61 @@ async function listFlashModels() {
     .filter(n => re.test(n))
     .sort((a, b) => { const x = key(a), y = key(b); return (x[0] - y[0]) || (x[1] - y[1]) || (x[2] - y[2]); });
 }
+// Mỗi mô hình có hạn mức miễn phí riêng: hết lượt thì đánh dấu và chuyển sang mô hình khác.
+const isQuota = msg => /quota|exceeded|RESOURCE_EXHAUSTED|rate limit|HTTP 429/i.test(msg);
+const isSkip = msg => /no longer available|not found|not supported|deprecated|không trả lời sau/i.test(msg);
+function retryMs(msg) {
+  const m = msg.match(/retry in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?/i);
+  const ms = m ? ((+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0)) * 1000 : 0;
+  return Math.max(ms, 60000) || 3600000;
+}
+async function modelList(refresh) {
+  if (!refresh && settings.models && settings.models.length && Date.now() - (settings.modelsAt || 0) < 864e5) return settings.models;
+  settings.models = await listFlashModels(); settings.modelsAt = Date.now(); saveSettings();
+  return settings.models;
+}
+function modelOrder(names) {
+  return [settings.model].filter(n => names.includes(n)).concat(names.filter(n => n !== settings.model));
+}
 // Thử lần lượt từng mô hình, giữ lại mô hình đầu tiên trả lời được.
 async function findWorkingModel(onStep) {
-  const names = await listFlashModels();
+  const names = await modelList(true);
   if (!names.length) throw new Error('khóa này không có mô hình Gemini Flash nào');
-  const order = [settings.model].filter(n => names.includes(n)).concat(names.filter(n => n !== settings.model));
-  const fails = [];
-  for (const m of order.slice(0, 6)) {
+  const fails = [], ex = settings.exhausted || (settings.exhausted = {});
+  for (const m of modelOrder(names).slice(0, 8)) {
+    if (ex[m] > Date.now()) { fails.push(m + ': đang hết lượt'); continue; }
     if (onStep) onStep(m);
     try {
       const r = await geminiCall('Trả về JSON {"ok": true}', m, 25000);
       if (r && r.ok) { settings.model = m; saveSettings(); return { model: m, fails }; }
       fails.push(m + ': trả lời sai dạng');
-    } catch (e) { fails.push(m + ': ' + e.message); }
+    } catch (e) {
+      if (isQuota(e.message)) { ex[m] = Date.now() + retryMs(e.message); saveSettings(); fails.push(m + ': hết lượt miễn phí'); }
+      else fails.push(m + ': ' + e.message);
+    }
   }
   throw new Error('không mô hình nào trả lời được.\n' + fails.join('\n'));
 }
-async function gemini(prompt, retried) {
-  try { return await geminiCall(prompt); } catch (e) {
-    if (retried || !/no longer available|not found|not supported|deprecated|không trả lời sau/i.test(e.message)) throw e;
-    await findWorkingModel();
-    if (!$('#settings').hidden) $('#setModel').value = settings.model;
-    toast('Đã chuyển sang mô hình ' + settings.model);
-    return gemini(prompt, true);
+async function gemini(prompt, ms) {
+  let names = [];
+  try { names = await modelList(); } catch (e) { /* vẫn thử mô hình đang chọn */ }
+  const ex = settings.exhausted || (settings.exhausted = {});
+  let lastErr = null, soonest = Infinity;
+  for (const m of modelOrder(names.length ? names : [settings.model])) {
+    if (ex[m] > Date.now()) { soonest = Math.min(soonest, ex[m]); continue; }
+    try {
+      const r = await geminiCall(prompt, m, ms);
+      if (m !== settings.model) { settings.model = m; saveSettings(); }
+      return r;
+    } catch (e) {
+      lastErr = e;
+      if (isQuota(e.message)) { ex[m] = Date.now() + retryMs(e.message); soonest = Math.min(soonest, ex[m]); saveSettings(); continue; }
+      if (isSkip(e.message)) continue;
+      throw e;
+    }
   }
+  if (soonest < Infinity) throw new Error('QUOTA: đã hết lượt Gemini miễn phí, có lại sau khoảng ' + Math.ceil((soonest - Date.now()) / 60000) + ' phút');
+  throw lastErr || new Error('không gọi được Gemini');
 }
 async function geminiCall(prompt, model, ms) {
   model = model || settings.model;
@@ -183,31 +214,47 @@ async function myMemory(q) {
 }
 
 const translating = new Set();
+const normKey = w => String(w).toLowerCase().replace(/’/g, "'").trim();
+// Dịch câu và soạn sẵn từ điển cho mọi từ trong câu, 10 câu mỗi lượt gọi Gemini.
+const GLOSS_PROMPT = 'Bạn soạn bài học cho người Việt học tiếng Anh (giọng Anh–Mỹ). Với MỖI câu trong mảng đầu vào, trả về một đối tượng JSON:\n' +
+  '{"vi": bản dịch tiếng Việt tự nhiên, sát nghĩa, giữ mạch văn của cả bài,\n' +
+  ' "w": {"từ viết thường đúng như trong câu": ["IPA Anh–Mỹ trong /…/", "từ loại tiếng Việt ngắn", "nghĩa tiếng Việt đúng trong câu này", "dạng gốc nếu khác, không thì \\"\\""]},\n' +
+  ' "ph": [["cụm động từ / thành ngữ / cụm cố định có trong câu", "IPA", "loại", "nghĩa trong câu"]]}\n' +
+  '"w" phải có MỌI từ trong câu (kể cả a, the, is, số). "ph" có thể rỗng. Chỉ trả về một mảng JSON đúng số phần tử, cùng thứ tự.\n';
 async function translateLesson(L) {
   if (translating.has(L.id)) return;
-  const todo = L.sentences.map((s, i) => i).filter(i => !L.sentences[i].vi);
+  const need = s => !s.vi || (settings.key && !s.g);
+  const todo = L.sentences.map((s, i) => i).filter(i => need(L.sentences[i]));
   if (!todo.length) return;
   translating.add(L.id);
-  let done = L.sentences.length - todo.length;
-  const step = () => { if (current === L) $('#trStatus').textContent = `Đang dịch ${done}/${L.sentences.length}…`; };
+  let done = L.sentences.length - todo.length, useFree = !settings.key;
+  const step = () => { if (current === L) $('#trStatus').textContent = `Đang dịch & soạn từ điển ${done}/${L.sentences.length}…`; };
   step();
   try {
     if (settings.key) {
-      for (let k = 0; k < todo.length; k += 25) {
-        const idx = todo.slice(k, k + 25);
-        const src = idx.map(i => L.sentences[i].en);
-        const vis = await gemini(
-          'Dịch từng câu tiếng Anh sau sang tiếng Việt tự nhiên, dễ hiểu, sát nghĩa, cho người Việt học tiếng Anh. ' +
-          'Các câu thuộc cùng một bài, giữ mạch văn. Trả về đúng một mảng JSON gồm ' + src.length +
-          ' chuỗi, cùng thứ tự, không thêm gì khác.\n' + JSON.stringify(src));
-        if (!Array.isArray(vis)) throw new Error('Gemini trả về sai định dạng');
-        idx.forEach((i, j) => { if (vis[j]) L.sentences[i].vi = String(vis[j]); });
-        done += idx.length; saveLessons(); refreshVi(L, idx); step();
+      try {
+        for (let k = 0; k < todo.length; k += 10) {
+          const idx = todo.slice(k, k + 10);
+          const res = await gemini(GLOSS_PROMPT + JSON.stringify(idx.map(i => L.sentences[i].en)), 120000);
+          if (!Array.isArray(res)) throw new Error('Gemini trả về sai định dạng');
+          idx.forEach((i, j) => {
+            const x = res[j] || {}, s = L.sentences[i];
+            if (x.vi) s.vi = String(x.vi);
+            s.g = {};
+            for (const [w, v] of Object.entries(x.w || {})) if (Array.isArray(v)) s.g[normKey(w)] = v.map(String);
+            s.ph = Array.isArray(x.ph) ? x.ph.filter(a => Array.isArray(a) && a[0]).map(a => a.map(String)) : [];
+          });
+          done += idx.length; saveLessons(); refreshVi(L, idx); step();
+        }
+      } catch (e) {
+        useFree = true;
+        toast((isQuota(e.message) ? e.message.replace(/^QUOTA: /, 'Gemini ') : 'Lỗi Gemini: ' + e.message) + '. Tạm dịch bằng nguồn miễn phí.');
       }
-    } else {
-      for (const i of todo) {
+    }
+    if (useFree) {
+      for (const i of L.sentences.map((s, i) => i).filter(i => !L.sentences[i].vi)) {
         L.sentences[i].vi = await myMemory(L.sentences[i].en);
-        done++; saveLessons(); refreshVi(L, [i]); step();
+        saveLessons(); refreshVi(L, [i]);
       }
     }
   } catch (e) {
@@ -239,27 +286,44 @@ async function dictIpa(w) {
     return us.text || j[0]?.phonetic || '';
   } catch (e) { return ''; }
 }
-async function lookup(phrase, sentence) {
+// Tra trong từ điển đã soạn sẵn của câu (không tốn lượt Gemini).
+function quickLookup(phrase, si) {
+  const s = current.sentences[si], key = normKey(phrase);
+  const p = (s.ph || []).find(x => normKey(x[0]) === key);
+  if (p) return { ipa: p[1], pos: p[2], meaning: p[3], lemma: '', other: '' };
+  if (s.g && s.g[key]) { const [ipa, pos, meaning, lemma] = s.g[key]; return { ipa, pos, meaning, lemma: lemma && normKey(lemma) !== key ? lemma : '', other: '' }; }
+  const k = (settings.key ? 'g|' : 'f|') + phrase.toLowerCase() + '|' + s.en;
+  return cache[k] || null;
+}
+async function freeLookup(phrase) {
+  const ipas = await Promise.all(phrase.split(/\s+/).map(dictIpa));
+  return {
+    ipa: ipas.filter(Boolean).length ? '/' + ipas.map(x => x.replace(/^\/|\/$/g, '') || '?').join(' ') + '/' : '',
+    pos: '', lemma: '', meaning: await myMemory(phrase), other: ''
+  };
+}
+async function lookup(phrase, si) {
+  const quick = quickLookup(phrase, si);
+  if (quick) return quick;
+  const sentence = current.sentences[si].en;
   const k = (settings.key ? 'g|' : 'f|') + phrase.toLowerCase() + '|' + sentence;
-  if (cache[k]) return cache[k];
   let res;
   if (settings.key) {
-    res = await gemini(
+    try { res = await gemini(
       'Bạn là từ điển Anh–Việt cho người Việt học tiếng Anh.\n' +
       'Từ/cụm từ: ' + JSON.stringify(phrase) + '\nCâu ngữ cảnh: ' + JSON.stringify(sentence) + '\n' +
       'Trả về JSON với các khóa: "ipa" (phiên âm IPA giọng Anh–Mỹ, đặt trong /…/), ' +
       '"pos" (từ loại bằng tiếng Việt, vd: danh từ, động từ, tính từ, cụm động từ, thành ngữ), ' +
       '"lemma" (dạng gốc nếu khác, vd became → become; nếu giống thì để rỗng), ' +
       '"meaning" (nghĩa tiếng Việt đúng trong câu này, ngắn gọn), ' +
-      '"other" (1–3 nghĩa phổ biến khác, ngắn, có thể rỗng).');
-  } else {
-    const words = phrase.split(/\s+/);
-    const ipas = await Promise.all(words.map(dictIpa));
-    res = {
-      ipa: ipas.filter(Boolean).length ? '/' + ipas.map(x => x.replace(/^\/|\/$/g, '') || '?').join(' ') + '/' : '',
-      pos: '', lemma: '', meaning: await myMemory(phrase), other: ''
-    };
-  }
+      '"other" (1–3 nghĩa phổ biến khác, ngắn, có thể rỗng).', 25000); }
+    catch (e) {
+      if (!isQuota(e.message) && !isSkip(e.message)) throw e;
+      res = await freeLookup(phrase);
+      res.note = 'Gemini đang hết lượt — nghĩa lấy từ nguồn dự phòng.';
+      return res;
+    }
+  } else res = await freeLookup(phrase);
   cache[k] = res;
   const keys = Object.keys(cache);
   if (keys.length > 800) keys.slice(0, keys.length - 800).forEach(x => delete cache[x]);
@@ -279,7 +343,8 @@ function loadVoices() {
 function getVoice() {
   const us = voices.filter(v => /en[-_]US/i.test(v.lang));
   return voices.find(v => v.name === settings.voice)
-    || us.find(v => PREFERRED.test(v.name) && /Premium|Enhanced|Natural/i.test(v.name))
+    || us.find(v => /Premium|Cao cấp/i.test(v.name))
+    || us.find(v => /Enhanced|Natural|Nâng cao/i.test(v.name))
     || us.find(v => PREFERRED.test(v.name))
     || us[0] || voices[0] || null;
 }
@@ -317,7 +382,7 @@ function openLesson(L) {
   $('#progress').max = Math.max(0, L.sentences.length - 1);
   show('reader');
   setPos(Math.min(L.pos || 0, L.sentences.length - 1), false);
-  if (L.sentences.some(s => !s.vi)) translateLesson(L);
+  if (L.sentences.some(s => !s.vi || (settings.key && !s.g))) translateLesson(L);
 }
 function setPos(i, scroll = true) {
   if (!current) return;
@@ -385,10 +450,11 @@ function openWord(span) {
   selN = { si, a: all.indexOf(span), b: all.indexOf(span), n: all.length };
   showSel(true);
 }
-function showSel(speak) {
+let lookTimer;
+function showSel(speak, delay) {
   document.querySelectorAll('.w.sel').forEach(x => x.classList.remove('sel'));
   selSpans().forEach(x => x.classList.add('sel'));
-  const phrase = selText(), sentence = current.sentences[selN.si].en;
+  const phrase = selText(), si = selN.si;
   $('#sheet').hidden = false;
   $('#shText').textContent = phrase;
   $('#shIpa').textContent = '';
@@ -397,7 +463,11 @@ function showSel(speak) {
   const body = $('#shBody'); body.textContent = 'Đang tra…';
   if (speak) speakOnce(phrase);
   const seq = ++lookSeq;
-  lookup(phrase, sentence).then(r => {
+  clearTimeout(lookTimer);
+  // Khi đang nối thêm từ, chờ anh dừng tay rồi mới tra để đỡ tốn lượt Gemini.
+  const run = () => lookup(phrase, si);
+  const p = delay && !quickLookup(phrase, si) ? new Promise(res => { lookTimer = setTimeout(() => res(run()), delay); }) : run();
+  p.then(r => {
     if (seq !== lookSeq) return;
     selN.result = r;
     $('#shIpa').textContent = r.ipa || '';
@@ -406,6 +476,7 @@ function showSel(speak) {
     if (pos) body.appendChild(el('div', 'pos', pos));
     body.appendChild(el('div', 'm', r.meaning || '(không có nghĩa)'));
     if (r.other) body.appendChild(el('div', 'o', 'Nghĩa khác: ' + r.other));
+    if (r.note) body.appendChild(el('div', 'pos', r.note));
     const vi = current.sentences[selN.si].vi;
     if (vi) body.appendChild(el('div', 'ex', vi));
   }).catch(e => { if (seq === lookSeq) body.textContent = 'Lỗi tra từ: ' + e.message; });
@@ -509,8 +580,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#rate').oninput = e => { settings.rate = Number(e.target.value); $('#rateLbl').textContent = settings.rate.toFixed(1) + '×'; saveSettings(); };
   $('#viToggle').onclick = () => { settings.showVi = !settings.showVi; saveSettings(); applyVi(); };
 
-  $('#shLeft').onclick = () => { if (selN.a > 0) { selN.a--; showSel(true); } };
-  $('#shRight').onclick = () => { if (selN.b < selN.n - 1) { selN.b++; showSel(true); } };
+  $('#shLeft').onclick = () => { if (selN.a > 0) { selN.a--; showSel(true, 1200); } };
+  $('#shRight').onclick = () => { if (selN.b < selN.n - 1) { selN.b++; showSel(true, 1200); } };
   $('#shSpeak').onclick = () => selN && speakOnce(selText());
   $('#shSlow').onclick = () => selN && speakOnce(selText(), 0.6);
   $('#shSave').onclick = saveWord;
