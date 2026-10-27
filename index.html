@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="vi">
 <head>
 <meta charset="utf-8">
@@ -12,9 +12,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=0.8">
+<link rel="stylesheet" href="style.css?v=0.9">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js" defer></script>
-<script src="app.js?v=0.8" defer></script>
+<script src="app.js?v=0.9" defer></script>
 </head>
 <body>
 <header class="top">
@@ -48,6 +48,7 @@
     <span id="trStatus" class="status"></span>
     <span id="auStatus" class="status"></span>
   </div>
+  <button id="upgradeTr" class="btn small" hidden></button>
   <input id="progress" type="range" min="0" max="0" value="0" aria-label="Tiến độ">
   <div id="text" class="text"></div>
   <div class="spacer"></div>
@@ -110,6 +111,18 @@
     <button id="shSlow" class="btn">🐢 Chậm</button>
     <button id="shSave" class="btn primary">★ Lưu</button>
     <button id="shClose" class="btn">Đóng</button>
+  </div>
+</div>
+
+<!-- Hộp đặt tên bài -->
+<div id="nameBox" class="dlg" hidden>
+  <div class="dlg-card">
+    <b id="nameHead">Đặt tên bài học</b>
+    <input id="nameInput" autocomplete="off" placeholder="Tên bài học">
+    <div class="actions">
+      <button id="nameOk" class="btn primary">Lưu bài</button>
+      <button id="nameCancel" class="btn">Hủy</button>
+    </div>
   </div>
 </div>
 

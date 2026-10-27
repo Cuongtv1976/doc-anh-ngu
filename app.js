@@ -1,5 +1,5 @@
-'use strict';
-const APP_VERSION = '0.8';
+﻿'use strict';
+const APP_VERSION = '0.9';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -23,11 +23,44 @@ const settings = Object.assign({ key: '', model: DEFAULT_MODEL, rate: 0.9, voice
 if (!settings.model || settings.model === 'gemini-2.5-flash') settings.model = DEFAULT_MODEL;
 // v0.6: chuyển mặc định sang giọng AI (giọng máy iPhone không dùng được bản Cao cấp, tắt màn hình thì ngừng đọc).
 if (settings.voiceV !== 6) { settings.voice = 'ai:af_heart'; settings.voiceV = 6; }
-const lessons = store.get('lessons', []);
+// Bài học (cả bản dịch, từ điển) lưu trong IndexedDB — không giới hạn 5 MB như localStorage.
+const lessons = [];
+let lessonsReady = false;
 let vocab = store.get('vocab', []);
 let cache = store.get('lookup', {});
 const saveSettings = () => store.set('settings', settings);
-const saveLessons = () => store.set('lessons', lessons);
+// saveLessons(L): lưu một bài; saveLessons(): ghi lại toàn bộ (sau khi xóa bài). Gộp các lần lưu liên tiếp.
+const dirty = new Set();
+let saveT = 0, saveAll = false;
+function saveLessons(L) {
+  if (L) dirty.add(L); else saveAll = true;
+  clearTimeout(saveT); saveT = setTimeout(flushLessons, 400);
+}
+function flushLessons() {
+  clearTimeout(saveT);
+  const all = saveAll, list = all ? lessons.slice() : [...dirty];
+  saveAll = false; dirty.clear();
+  if (!all && !list.length) return Promise.resolve();
+  return idb('readwrite', s => { if (all) s.clear(); for (const L of list) s.put(L, L.id); }, 'lessons')
+    .catch(e => toast('Không lưu được bài học: ' + e.message));
+}
+async function loadLessons() {
+  let list = [];
+  try { list = (await idb('readonly', s => s.getAll(), 'lessons')) || []; }
+  catch (e) { toast('Không mở được kho bài học: ' + e.message); }
+  // Chuyển bài của bản cũ (localStorage) sang IndexedDB.
+  const old = store.get('lessons', []);
+  if (old.length) {
+    const add = old.filter(L => !list.some(x => x.id === L.id));
+    try {
+      await idb('readwrite', s => add.forEach(L => s.put(L, L.id)), 'lessons');
+      localStorage.removeItem('eh.lessons');
+    } catch (e) { /* giữ bản cũ, lần sau chuyển tiếp */ }
+    list = list.concat(add);
+  }
+  lessons.push(...list.sort((a, b) => b.created - a.created));
+  lessonsReady = true;
+}
 const saveVocab = () => store.set('vocab', vocab);
 
 let toastTimer;
@@ -94,15 +127,33 @@ async function importFile(file) {
       return;
     }
   } catch (e) { toast('Không đọc được file: ' + e.message); return; }
-  createLesson(file.name.replace(/\.[^.]+$/, ''), text);
+  createLesson(file.name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' '), text);
 }
-function createLesson(title, text) {
+// Hộp đặt tên bài: trả về tên, hoặc null nếu anh bấm Hủy.
+function askName(def, head) {
+  return new Promise(res => {
+    const box = $('#nameBox'), inp = $('#nameInput');
+    $('#nameHead').textContent = head || 'Đặt tên bài học';
+    inp.value = def || ''; box.hidden = false;
+    setTimeout(() => { inp.focus(); inp.select(); }, 50);
+    const done = v => { box.hidden = true; $('#nameOk').onclick = $('#nameCancel').onclick = inp.onkeydown = null; res(v); };
+    $('#nameOk').onclick = () => done(inp.value.trim() || def || 'Bài học');
+    $('#nameCancel').onclick = () => done(null);
+    inp.onkeydown = e => { if (e.key === 'Enter') $('#nameOk').onclick(); };
+  });
+}
+async function createLesson(title, text) {
   const sentences = splitSentences(text);
   if (!sentences.length) { toast('Không tìm thấy nội dung tiếng Anh trong file.'); return; }
-  const L = { id: Date.now().toString(36), title: title || sentences[0].en.slice(0, 50), created: Date.now(), pos: 0, sentences };
-  lessons.unshift(L); saveLessons();
+  // Tải lại đúng bài đã có: mở bản đã lưu, không dịch và tạo giọng lại.
+  const same = lessons.find(x => x.sentences.length === sentences.length && x.sentences.every((s, i) => s.en === sentences[i].en));
+  if (same) { toast('Bài này đã có trong thư viện (“' + same.title + '”) — mở bản đã lưu.'); openLesson(same); return; }
+  const name = await askName(title || sentences[0].en.slice(0, 50));
+  if (name === null) return;
+  const L = { id: Date.now().toString(36), title: name, created: Date.now(), pos: 0, sentences };
+  lessons.unshift(L); saveLessons(L); await flushLessons();
+  toast('Đã lưu bài “' + name + '”. Bản dịch và giọng đọc được lưu tự động, lần sau mở là dùng ngay.');
   openLesson(L);
-  translateLesson(L);
 }
 
 // ---------- Dịch ----------
@@ -267,9 +318,10 @@ const GLOSS_PROMPT = 'Bạn soạn bài học cho người Việt học tiếng 
   ' "w": {"từ viết thường đúng như trong câu": ["IPA Anh–Mỹ trong /…/", "từ loại tiếng Việt ngắn", "nghĩa tiếng Việt đúng trong câu này", "dạng gốc nếu khác, không thì \\"\\""]},\n' +
   ' "ph": [["cụm động từ / thành ngữ / cụm cố định có trong câu", "IPA", "loại", "nghĩa trong câu"]]}\n' +
   '"w" phải có MỌI từ trong câu (kể cả a, the, is, số). "ph" có thể rỗng. Chỉ trả về một mảng JSON đúng số phần tử, cùng thứ tự.\n';
-async function translateLesson(L) {
+// upgrade: dịch lại bằng Gemini những câu trước đó dịch bằng nguồn dự phòng (chỉ khi anh bấm nút).
+async function translateLesson(L, upgrade) {
   if (translating.has(L.id)) return;
-  const need = s => !s.vi || (settings.key && !s.g);
+  const need = s => !s.vi || (upgrade && settings.key && !s.g);
   const todo = L.sentences.map((s, i) => i).filter(i => need(L.sentences[i]));
   if (!todo.length) return;
   translating.add(L.id);
@@ -291,7 +343,7 @@ async function translateLesson(L) {
             for (const [w, v] of Object.entries(x.w || {})) if (Array.isArray(v)) s.g[normKey(w)] = v.map(String);
             s.ph = Array.isArray(x.ph) ? x.ph.filter(a => Array.isArray(a) && a[0]).map(a => a.map(String)) : [];
           });
-          done += idx.length; saveLessons(); refreshVi(L, idx); step();
+          done += idx.length; saveLessons(L); refreshVi(L, idx); step();
         }
       } catch (e) {
         useFree = true;
@@ -301,18 +353,27 @@ async function translateLesson(L) {
     if (useFree) {
       for (const i of L.sentences.map((s, i) => i).filter(i => !L.sentences[i].vi)) {
         L.sentences[i].vi = await myMemory(L.sentences[i].en);
-        saveLessons(); refreshVi(L, [i]);
+        saveLessons(L); refreshVi(L, [i]);
       }
     }
   } catch (e) {
     toast('Lỗi dịch: ' + e.message);
   } finally {
     translating.delete(L.id);
+    flushLessons();
     if (current === L) {
       const left = L.sentences.filter(s => !s.vi).length;
       $('#trStatus').textContent = left ? `Còn ${left} câu chưa dịch` : '';
+      updUpgrade(L);
     }
   }
+}
+// Nút dịch lại bằng Gemini cho các câu đã dịch bằng nguồn dự phòng (chưa có từ điển).
+function updUpgrade(L) {
+  const b = $('#upgradeTr'), n = L.sentences.filter(s => s.vi && !s.g).length;
+  b.hidden = !(settings.key && n && !translating.has(L.id));
+  b.textContent = `✨ Dịch lại ${n} câu bằng Gemini (bản dịch hiện tại là nguồn dự phòng)`;
+  b.onclick = () => { b.hidden = true; translateLesson(L, true); };
 }
 function refreshVi(L, idx) {
   if (current !== L) return;
@@ -496,15 +557,17 @@ function wavUrl(parts) {
 let dbP = null;
 function db() {
   return dbP || (dbP = new Promise((res, rej) => {
-    const r = indexedDB.open('doc-anh-ngu', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('audio');
+    const r = indexedDB.open('doc-anh-ngu', 2);
+    r.onupgradeneeded = () => {
+      for (const n of ['audio', 'lessons']) if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n);
+    };
     r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
   }));
 }
-async function idb(mode, fn) {
+async function idb(mode, fn, store = 'audio') {
   const d = await db();
   return new Promise((res, rej) => {
-    const tx = d.transaction('audio', mode), q = fn(tx.objectStore('audio'));
+    const tx = d.transaction(store, mode), q = fn(tx.objectStore(store));
     tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error);
   });
 }
@@ -673,14 +736,16 @@ function openLesson(L) {
   $('#progress').max = Math.max(0, L.sentences.length - 1);
   show('reader');
   setPos(Math.min(L.pos || 0, L.sentences.length - 1), false);
-  if (L.sentences.some(s => !s.vi || (settings.key && !s.g))) translateLesson(L);
+  // Chỉ dịch những câu chưa có bản dịch; câu đã dịch được dùng lại từ bản đã lưu.
+  if (L.sentences.some(s => !s.vi)) translateLesson(L);
+  updUpgrade(L);
   $('#auStatus').textContent = '';
   if (isAi()) prepareAudio(L);
 }
 function setPos(i, scroll = true) {
   if (!current) return;
   finished = false;
-  current.pos = i; saveLessons();
+  current.pos = i; saveLessons(current);
   $('#progress').value = i;
   document.querySelectorAll('.sent.cur').forEach(x => x.classList.remove('cur'));
   markWord(-1);
@@ -818,19 +883,32 @@ function saveWord() {
 function renderLibrary() {
   $('#keyHint').hidden = !!settings.key;
   const ul = $('#lessonList'); ul.textContent = '';
+  if (!lessonsReady) { ul.appendChild(el('li', 's', 'Đang mở thư viện bài học…')); return; }
   if (!lessons.length) { ul.appendChild(el('li', 's', 'Chưa có bài học. Bấm “Tải file Word” để bắt đầu.')); return; }
   for (const L of lessons) {
     const li = el('li'); const m = el('div', 'main');
-    const left = L.sentences.filter(s => !s.vi).length;
-    m.append(el('div', 't', L.title),
-      el('div', 's', `${L.sentences.length} câu · ${new Date(L.created).toLocaleDateString('vi-VN')}` + (left ? ` · còn ${left} câu chưa dịch` : '')));
+    const n = L.sentences.length, left = L.sentences.filter(s => !s.vi).length;
+    const info = el('div', 's', `${n} câu · ${new Date(L.created).toLocaleDateString('vi-VN')} · ` + (left ? `còn ${left} câu chưa dịch` : '✅ đã dịch'));
+    m.append(el('div', 't', L.title), info);
+    // Số câu đã có giọng AI lưu sẵn trên máy.
+    if (isAi()) {
+      const tag = L.id + '|' + aiVoice();
+      idb('readonly', s => s.count(IDBKeyRange.bound(tag + '|', tag + '|￿'))).then(c => {
+        info.textContent += c >= n ? ' · 🔊 giọng AI đã lưu đủ' : ` · 🔊 giọng AI ${c}/${n} câu`;
+      }).catch(() => {});
+    }
     m.onclick = () => openLesson(L);
+    const ren = el('button', 'del', '✎'); ren.title = 'Đổi tên bài';
+    ren.onclick = async () => {
+      const t = await askName(L.title, 'Đổi tên bài học');
+      if (t) { L.title = t; saveLessons(L); renderLibrary(); }
+    };
     const del = el('button', 'del', '🗑'); del.title = 'Xóa bài';
     del.onclick = () => {
-      if (!confirm('Xóa bài “' + L.title + '”?')) return;
+      if (!confirm('Xóa bài “' + L.title + '”? Bản dịch và giọng đọc đã lưu của bài này cũng bị xóa.')) return;
       lessons.splice(lessons.indexOf(L), 1); saveLessons(); deleteAudio(L); renderLibrary();
     };
-    li.append(m, del); ul.appendChild(li);
+    li.append(m, ren, del); ul.appendChild(li);
   }
 }
 function renderVocab() {
@@ -954,5 +1032,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (isAi()) loadTts().catch(() => {});
   applyVi();
   show('library');
+  // Xin trình duyệt giữ dữ liệu lâu dài (không tự xóa khi máy thiếu chỗ).
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  loadLessons().then(() => { if (!$('#library').hidden) renderLibrary(); });
+  // Lưu ngay khi rời app (vuốt tắt, chuyển app).
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushLessons(); });
+  window.addEventListener('pagehide', () => flushLessons());
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');
 });

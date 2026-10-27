@@ -115,6 +115,11 @@ input:not([type]), input[type=password], textarea, select {
 .check { display: flex; gap: 8px; align-items: center; margin: 16px 0; }
 .ver { color: var(--muted); font-size: .85rem; }
 
+#upgradeTr { margin-bottom: 6px; white-space: normal; text-align: left; }
+.dlg { position: fixed; inset: 0; z-index: 15; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 18vh 16px 0; }
+.dlg-card { width: 100%; max-width: 440px; display: grid; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+.dlg-card .actions { margin: 0; justify-content: flex-end; }
+
 .toast {
   position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); z-index: 20;
   background: #222; color: #fff; padding: 10px 14px; border-radius: 10px; max-width: 90vw; font-size: .9rem;
