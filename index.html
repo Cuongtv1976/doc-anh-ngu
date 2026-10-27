@@ -12,9 +12,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=0.3">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js" defer></script>
-<script src="app.js" defer></script>
+<script src="app.js?v=0.3" defer></script>
 </head>
 <body>
 <header class="top">
@@ -73,6 +73,7 @@
     <small>Để trống sẽ dùng gemini-3.8-flash. Khi Google ngừng một mô hình, app tự chuyển sang mô hình Flash mới nhất.</small>
   </label>
   <button id="testKey" class="btn small">Kiểm tra khóa</button>
+  <p id="keyStatus" class="hint" hidden></p>
   <label class="field">Giọng đọc (Anh–Mỹ)
     <select id="setVoice"></select>
   </label>

@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '0.2';
+const APP_VERSION = '0.3';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -130,14 +130,17 @@ async function gemini(prompt, retried) {
 }
 async function geminiCall(prompt) {
   const url = GAPI + '/' + encodeURIComponent(settings.model) + ':generateContent';
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 60000);
   const r = await fetch(url, {
-    method: 'POST',
+    method: 'POST', signal: ctl.signal,
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
     })
-  });
+  }).catch(e => { throw new Error(e.name === 'AbortError' ? 'Gemini không trả lời sau 60 giây' : 'không kết nối được Gemini (' + e.message + ')'); })
+    .finally(() => clearTimeout(timer));
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((j.error && j.error.message) || ('HTTP ' + r.status));
   const t = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
@@ -492,10 +495,17 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#setVi').onchange = e => { settings.showVi = e.target.checked; saveSettings(); applyVi(); };
   $('#testVoice').onclick = () => speakOnce('Hello! This is how I will read your lessons.');
   $('#testKey').onclick = async () => {
+    const btn = $('#testKey'), st = $('#keyStatus');
+    const say = msg => { st.hidden = false; st.textContent = msg; };
     settings.key = $('#setKey').value.trim(); settings.model = $('#setModel').value.trim() || DEFAULT_MODEL; saveSettings();
-    if (!settings.key) { toast('Chưa nhập khóa.'); return; }
-    try { const r = await gemini('Trả về JSON {"ok": true}'); toast(r && r.ok ? 'Khóa hoạt động tốt (mô hình ' + settings.model + ').' : 'Khóa phản hồi bất thường.'); }
-    catch (e) { toast('Khóa lỗi: ' + e.message); }
+    if (!settings.key) { say('Chưa nhập khóa.'); return; }
+    btn.disabled = true; say('Đang kiểm tra khóa… có thể mất 10–20 giây.');
+    try {
+      const r = await gemini('Trả về JSON {"ok": true}');
+      say(r && r.ok ? '✅ Khóa hoạt động tốt — mô hình ' + settings.model + '.' : '⚠️ Khóa phản hồi bất thường: ' + JSON.stringify(r));
+      $('#setModel').value = settings.model;
+    } catch (e) { say('❌ Khóa lỗi: ' + e.message); }
+    finally { btn.disabled = false; }
   };
 
   if ('speechSynthesis' in window) {
