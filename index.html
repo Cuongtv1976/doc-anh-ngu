@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Đọc Anh Ngữ</title>
+<meta name="theme-color" content="#6d28d9">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Đọc Anh Ngữ">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <button class="nav" data-view="library">Bài học</button>
+  <button class="nav" data-view="vocab">Sổ từ</button>
+  <button class="nav" data-view="settings">Cài đặt</button>
+</header>
+
+<!-- Thư viện bài học -->
+<main id="library" class="view">
+  <h1>Bài học của tôi</h1>
+  <div class="actions">
+    <label class="btn primary">Tải file Word
+      <input id="file" type="file" accept=".docx,.txt" hidden>
+    </label>
+    <button id="pasteToggle" class="btn">Dán văn bản</button>
+  </div>
+  <div id="pasteBox" class="paste" hidden>
+    <input id="pasteTitle" placeholder="Tên bài (không bắt buộc)">
+    <textarea id="pasteText" rows="7" placeholder="Dán bài tiếng Anh vào đây…"></textarea>
+    <button id="pasteSave" class="btn primary">Tạo bài học</button>
+  </div>
+  <p id="keyHint" class="hint" hidden>Chưa có khóa Gemini: app đang dịch bằng nguồn miễn phí dự phòng (giới hạn khoảng 5.000 ký tự/ngày, chất lượng thấp hơn). Vào <b>Cài đặt</b> để nhập khóa.</p>
+  <ul id="lessonList" class="list"></ul>
+</main>
+
+<!-- Màn hình đọc -->
+<main id="reader" class="view" hidden>
+  <div class="rhead">
+    <h2 id="lessonTitle"></h2>
+    <span id="trStatus" class="status"></span>
+  </div>
+  <input id="progress" type="range" min="0" max="0" value="0" aria-label="Tiến độ">
+  <div id="text" class="text"></div>
+  <div class="spacer"></div>
+</main>
+
+<!-- Sổ từ vựng -->
+<main id="vocab" class="view" hidden>
+  <div class="rhead">
+    <h1>Sổ từ vựng</h1>
+    <button id="exportCsv" class="btn small">Xuất CSV</button>
+  </div>
+  <ul id="vocabList" class="list"></ul>
+</main>
+
+<!-- Cài đặt -->
+<main id="settings" class="view" hidden>
+  <h1>Cài đặt</h1>
+  <label class="field">Khóa API Gemini (miễn phí)
+    <input id="setKey" type="password" autocomplete="off" placeholder="Dán khóa vào đây">
+    <small>Tạo khóa tại <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Khóa chỉ lưu trong trình duyệt của máy này.</small>
+  </label>
+  <label class="field">Mô hình Gemini
+    <input id="setModel" autocomplete="off">
+    <small>Mặc định gemini-2.5-flash. Nếu báo lỗi "model not found", đổi sang mô hình Flash mới hơn ghi trên AI Studio.</small>
+  </label>
+  <button id="testKey" class="btn small">Kiểm tra khóa</button>
+  <label class="field">Giọng đọc (Anh–Mỹ)
+    <select id="setVoice"></select>
+  </label>
+  <button id="testVoice" class="btn small">Nghe thử</button>
+  <label class="check"><input id="setVi" type="checkbox"> Hiện dòng dịch tiếng Việt</label>
+  <p class="ver">Phiên bản <span id="ver"></span></p>
+</main>
+
+<!-- Thanh điều khiển đọc -->
+<footer id="player" hidden>
+  <button id="prev" class="pbtn" aria-label="Câu trước">⏮</button>
+  <button id="play" class="pbtn big" aria-label="Phát">▶</button>
+  <button id="next" class="pbtn" aria-label="Câu sau">⏭</button>
+  <label class="speed"><span id="rateLbl">0.9×</span>
+    <input id="rate" type="range" min="0.5" max="1.5" step="0.1">
+  </label>
+  <button id="viToggle" class="pbtn" aria-label="Bật/tắt tiếng Việt">VI</button>
+</footer>
+
+<!-- Bảng tra từ -->
+<div id="sheet" class="sheet" hidden>
+  <div class="sh-top">
+    <button id="shLeft" class="btn small" title="Thêm từ bên trái">+ ←</button>
+    <div class="sh-word"><b id="shText"></b> <span id="shIpa" class="ipa"></span></div>
+    <button id="shRight" class="btn small" title="Thêm từ bên phải">→ +</button>
+  </div>
+  <div id="shBody" class="sh-body"></div>
+  <div class="sh-act">
+    <button id="shSpeak" class="btn">🔊 Nghe</button>
+    <button id="shSlow" class="btn">🐢 Chậm</button>
+    <button id="shSave" class="btn primary">★ Lưu</button>
+    <button id="shClose" class="btn">Đóng</button>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>
