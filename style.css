@@ -50,7 +50,7 @@ input:not([type]), input[type=password], textarea, select {
   width: 100%; font: inherit; padding: 10px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--ink);
 }
-.hint { font-size: .9rem; color: var(--muted); background: var(--card); border: 1px dashed var(--line); padding: 10px; border-radius: 10px; }
+.hint { white-space: pre-line; overflow-wrap: anywhere; font-size: .9rem; color: var(--muted); background: var(--card); border: 1px dashed var(--line); padding: 10px; border-radius: 10px; }
 
 .list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .list li { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; gap: 10px; align-items: center; }

@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '0.3';
+const APP_VERSION = '0.4';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -105,42 +105,70 @@ function createLesson(title, text) {
 
 // ---------- Dịch ----------
 const GAPI = 'https://generativelanguage.googleapis.com/v1beta/models';
-// Chọn mô hình gemini-X.Y-flash có số phiên bản cao nhất mà khóa được dùng.
-async function pickModel() {
-  const r = await fetch(GAPI + '?pageSize=200', { headers: { 'x-goog-api-key': settings.key } });
+// fetch có giới hạn thời gian chờ.
+async function fetchT(url, opt, ms, what) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, Object.assign({}, opt, { signal: ctl.signal })); }
+  catch (e) { throw new Error(e.name === 'AbortError' ? what + ' không trả lời sau ' + ms / 1000 + ' giây' : 'không kết nối được ' + what + ' (' + e.message + ')'); }
+  finally { clearTimeout(timer); }
+}
+// Danh sách mô hình Flash khóa được dùng: bản chính trước, bản lite sau; phiên bản cao trước.
+async function listFlashModels() {
+  const r = await fetchT(GAPI + '?pageSize=200', { headers: { 'x-goog-api-key': settings.key } }, 20000, 'Google');
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((j.error && j.error.message) || ('HTTP ' + r.status));
-  const ver = n => n.match(/^gemini-([\d.]+)-flash$/)[1].split('.').map(Number);
-  const names = (j.models || [])
+  const re = /^gemini-([\d.]+)-flash(-lite)?$/;
+  const key = n => { const m = n.match(re); const v = m[1].split('.').map(Number); return [m[2] ? 1 : 0, -v[0], -(v[1] || 0)]; };
+  return (j.models || [])
     .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
     .map(m => m.name.replace(/^models\//, ''))
-    .filter(n => /^gemini-[\d.]+-flash$/.test(n))
-    .sort((a, b) => { const x = ver(a), y = ver(b); return (y[0] - x[0]) || ((y[1] || 0) - (x[1] || 0)); });
-  if (!names.length) throw new Error('không tìm thấy mô hình Gemini Flash nào cho khóa này');
-  return names[0];
+    .filter(n => re.test(n))
+    .sort((a, b) => { const x = key(a), y = key(b); return (x[0] - y[0]) || (x[1] - y[1]) || (x[2] - y[2]); });
+}
+// Thử lần lượt từng mô hình, giữ lại mô hình đầu tiên trả lời được.
+async function findWorkingModel(onStep) {
+  const names = await listFlashModels();
+  if (!names.length) throw new Error('khóa này không có mô hình Gemini Flash nào');
+  const order = [settings.model].filter(n => names.includes(n)).concat(names.filter(n => n !== settings.model));
+  const fails = [];
+  for (const m of order.slice(0, 6)) {
+    if (onStep) onStep(m);
+    try {
+      const r = await geminiCall('Trả về JSON {"ok": true}', m, 25000);
+      if (r && r.ok) { settings.model = m; saveSettings(); return { model: m, fails }; }
+      fails.push(m + ': trả lời sai dạng');
+    } catch (e) { fails.push(m + ': ' + e.message); }
+  }
+  throw new Error('không mô hình nào trả lời được.\n' + fails.join('\n'));
 }
 async function gemini(prompt, retried) {
   try { return await geminiCall(prompt); } catch (e) {
-    if (retried || !/no longer available|not found|not supported|deprecated/i.test(e.message)) throw e;
-    settings.model = await pickModel(); saveSettings();
+    if (retried || !/no longer available|not found|not supported|deprecated|không trả lời sau/i.test(e.message)) throw e;
+    await findWorkingModel();
     if (!$('#settings').hidden) $('#setModel').value = settings.model;
     toast('Đã chuyển sang mô hình ' + settings.model);
     return gemini(prompt, true);
   }
 }
-async function geminiCall(prompt) {
-  const url = GAPI + '/' + encodeURIComponent(settings.model) + ':generateContent';
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 60000);
-  const r = await fetch(url, {
-    method: 'POST', signal: ctl.signal,
+async function geminiCall(prompt, model, ms) {
+  model = model || settings.model;
+  const url = GAPI + '/' + encodeURIComponent(model) + ':generateContent';
+  const cfg = { responseMimeType: 'application/json', temperature: 0.2 };
+  // Giảm "suy nghĩ" để trả lời nhanh (tham số khác nhau theo thế hệ mô hình).
+  if (!settings.noThinkCfg) {
+    if (/^gemini-2\./.test(model)) cfg.thinkingConfig = { thinkingBudget: 0 };
+    else cfg.thinkingConfig = { thinkingLevel: 'low' };
+  }
+  const r = await fetchT(url, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
-    })
-  }).catch(e => { throw new Error(e.name === 'AbortError' ? 'Gemini không trả lời sau 60 giây' : 'không kết nối được Gemini (' + e.message + ')'); })
-    .finally(() => clearTimeout(timer));
+    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: cfg })
+  }, ms || 90000, 'Gemini');
+  if (r.status === 400 && cfg.thinkingConfig) {
+    const e = await r.clone().json().catch(() => ({}));
+    if (/thinking/i.test((e.error && e.error.message) || '')) { settings.noThinkCfg = true; saveSettings(); return geminiCall(prompt, model, ms); }
+  }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((j.error && j.error.message) || ('HTTP ' + r.status));
   const t = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
@@ -440,7 +468,7 @@ function exportCsv() {
 }
 function renderSettings() {
   $('#setKey').value = settings.key;
-  $('#setModel').value = settings.model;
+  $('#setModel').value = settings.model || DEFAULT_MODEL;
   $('#setVi').checked = settings.showVi;
   const sel = $('#setVoice'); sel.textContent = '';
   const us = voices.filter(v => /en[-_]US/i.test(v.lang)), rest = voices.filter(v => !/en[-_]US/i.test(v.lang));
@@ -499,12 +527,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const say = msg => { st.hidden = false; st.textContent = msg; };
     settings.key = $('#setKey').value.trim(); settings.model = $('#setModel').value.trim() || DEFAULT_MODEL; saveSettings();
     if (!settings.key) { say('Chưa nhập khóa.'); return; }
-    btn.disabled = true; say('Đang kiểm tra khóa… có thể mất 10–20 giây.');
+    btn.disabled = true; say('Bước 1/2: kiểm tra khóa…');
+    const t0 = Date.now();
     try {
-      const r = await gemini('Trả về JSON {"ok": true}');
-      say(r && r.ok ? '✅ Khóa hoạt động tốt — mô hình ' + settings.model + '.' : '⚠️ Khóa phản hồi bất thường: ' + JSON.stringify(r));
+      const r = await findWorkingModel(m => say('Bước 2/2: thử mô hình ' + m + '… (tối đa 25 giây)'));
       $('#setModel').value = settings.model;
-    } catch (e) { say('❌ Khóa lỗi: ' + e.message); }
+      say('✅ Khóa hoạt động tốt — dùng mô hình ' + r.model + ' (' + Math.round((Date.now() - t0) / 1000) + ' giây).' +
+        (r.fails.length ? '\nĐã bỏ qua: ' + r.fails.join('; ') : ''));
+    } catch (e) { say('❌ Lỗi: ' + e.message); }
     finally { btn.disabled = false; }
   };
 

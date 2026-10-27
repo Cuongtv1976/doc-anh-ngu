@@ -1,5 +1,5 @@
-// Ưu tiên mạng (luôn lấy bản mới nhất), mất mạng thì dùng bản đã lưu.
-const CACHE = 'doc-anh-ngu-v0.3';
+﻿// Ưu tiên mạng (luôn lấy bản mới nhất), mất mạng thì dùng bản đã lưu.
+const CACHE = 'doc-anh-ngu-v0.4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
