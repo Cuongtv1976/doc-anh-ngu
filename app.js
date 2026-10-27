@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '0.7';
+const APP_VERSION = '0.8';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -628,6 +628,7 @@ au.addEventListener('ended', () => {
   if (auMode !== 'lesson' || !playing || !seg) return;
   const next = seg.offs[seg.offs.length - 1].i + 1;
   if (next < current.sentences.length) aiPlayFrom(next);
+  else if (settings.loop) loopAgain();
   else { playing = false; finished = true; updatePlay(); markWord(-1); }
 });
 // Bị hệ thống dừng (cuộc gọi, tai nghe rút ra…): cập nhật nút Phát.
@@ -705,6 +706,7 @@ function speakSentence(sysVoice) {
   u.onend = () => {
     if (id !== runId || !playing) return;
     if (current.pos < current.sentences.length - 1) { current.pos++; speakSentence(); }
+    else if (settings.loop) loopAgain();
     else { playing = false; finished = true; updatePlay(); markWord(-1); }
   };
   u.onerror = e => {
@@ -724,6 +726,18 @@ function play() {
     switchedAt = Date.now(); au.play().catch(() => {}); return;
   }
   speakSentence();
+}
+// Nút lặp: đọc hết bài thì quay lại đọc từ đầu, cho tới khi anh bấm dừng.
+let loopCount = 1;
+function loopAgain() {
+  loopCount++;
+  toast('Nghe lại lần ' + loopCount);
+  current.pos = 0; speakSentence();
+}
+function updateLoop() {
+  const b = $('#loop');
+  b.classList.toggle('on', !!settings.loop);
+  b.title = settings.loop ? 'Đang lặp lại cả bài (bấm để tắt)' : 'Lặp lại cả bài';
 }
 function pause() { playing = false; stopSpeech(); updatePlay(); markWord(-1); }
 function updatePlay() { $('#play').textContent = playing ? '⏸' : '▶'; }
@@ -889,7 +903,12 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#rate').value = settings.rate;
   $('#rateLbl').textContent = settings.rate.toFixed(1) + '×';
   $('#rate').oninput = e => { settings.rate = Number(e.target.value); $('#rateLbl').textContent = settings.rate.toFixed(1) + '×'; saveSettings(); if (auMode === 'lesson') au.playbackRate = settings.rate; };
-  $('#viToggle').onclick = () => { settings.showVi = !settings.showVi; saveSettings(); applyVi(); };
+  $('#loop').onclick = () => {
+    settings.loop = !settings.loop; saveSettings(); updateLoop(); loopCount = 1;
+    toast(settings.loop ? 'Bật lặp: đọc hết bài sẽ đọc lại từ đầu.' : 'Tắt lặp.');
+  };
+  updateLoop();
+  $('#viToggle').onclick =() => { settings.showVi = !settings.showVi; saveSettings(); applyVi(); };
 
   $('#shLeft').onclick = () => { if (selN.a > 0) { selN.a--; showSel(true, 1200); } };
   $('#shRight').onclick = () => { if (selN.b < selN.n - 1) { selN.b++; showSel(true, 1200); } };

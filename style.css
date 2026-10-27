@@ -85,10 +85,14 @@ input:not([type]), input[type=password], textarea, select {
   background: var(--card); border-top: 1px solid var(--line);
 }
 .pbtn { border: 0; background: none; color: var(--ink); font-size: 1.3rem; width: 44px; height: 44px; border-radius: 50%; cursor: pointer; }
+#loop { opacity: .4; filter: grayscale(1); }
+#loop.on { opacity: 1; filter: none; background: var(--line); box-shadow: inset 0 0 0 2px var(--accent); }
 .pbtn.big { background: var(--accent); color: var(--accent-ink); width: 54px; height: 54px; font-size: 1.4rem; }
 #viToggle { font-size: .85rem; font-weight: 700; color: var(--vi); }
-.speed { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); }
-.speed input { width: 90px; accent-color: var(--accent); }
+.pbtn { flex-shrink: 0; }
+.speed { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); flex: 0 1 auto; min-width: 0; }
+.speed input { width: 90px; min-width: 40px; flex: 1 1 auto; accent-color: var(--accent); }
+@media (max-width: 400px) { #player { gap: 6px; padding-left: 10px; padding-right: 10px; } }
 
 .sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; margin: 0 auto; max-width: 760px;
