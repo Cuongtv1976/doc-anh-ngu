@@ -1,5 +1,6 @@
 'use strict';
-const APP_VERSION = '0.1';
+const APP_VERSION = '0.2';
+const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -18,7 +19,8 @@ const store = {
     try { localStorage.setItem('eh.' + k, JSON.stringify(v)); } catch (e) { toast('Không lưu được dữ liệu trên máy này.'); }
   }
 };
-const settings = Object.assign({ key: '', model: 'gemini-2.5-flash', rate: 0.9, voice: '', showVi: true }, store.get('settings', {}));
+const settings = Object.assign({ key: '', model: DEFAULT_MODEL, rate: 0.9, voice: '', showVi: true }, store.get('settings', {}));
+if (!settings.model || settings.model === 'gemini-2.5-flash') settings.model = DEFAULT_MODEL;
 const lessons = store.get('lessons', []);
 let vocab = store.get('vocab', []);
 let cache = store.get('lookup', {});
@@ -102,8 +104,32 @@ function createLesson(title, text) {
 }
 
 // ---------- Dịch ----------
-async function gemini(prompt) {
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(settings.model) + ':generateContent';
+const GAPI = 'https://generativelanguage.googleapis.com/v1beta/models';
+// Chọn mô hình gemini-X.Y-flash có số phiên bản cao nhất mà khóa được dùng.
+async function pickModel() {
+  const r = await fetch(GAPI + '?pageSize=200', { headers: { 'x-goog-api-key': settings.key } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((j.error && j.error.message) || ('HTTP ' + r.status));
+  const ver = n => n.match(/^gemini-([\d.]+)-flash$/)[1].split('.').map(Number);
+  const names = (j.models || [])
+    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map(m => m.name.replace(/^models\//, ''))
+    .filter(n => /^gemini-[\d.]+-flash$/.test(n))
+    .sort((a, b) => { const x = ver(a), y = ver(b); return (y[0] - x[0]) || ((y[1] || 0) - (x[1] || 0)); });
+  if (!names.length) throw new Error('không tìm thấy mô hình Gemini Flash nào cho khóa này');
+  return names[0];
+}
+async function gemini(prompt, retried) {
+  try { return await geminiCall(prompt); } catch (e) {
+    if (retried || !/no longer available|not found|not supported|deprecated/i.test(e.message)) throw e;
+    settings.model = await pickModel(); saveSettings();
+    if (!$('#settings').hidden) $('#setModel').value = settings.model;
+    toast('Đã chuyển sang mô hình ' + settings.model);
+    return gemini(prompt, true);
+  }
+}
+async function geminiCall(prompt) {
+  const url = GAPI + '/' + encodeURIComponent(settings.model) + ':generateContent';
   const r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
@@ -212,14 +238,19 @@ async function lookup(phrase, sentence) {
 
 // ---------- Giọng đọc ----------
 let voices = [];
+// Giọng hiệu ứng của Apple (không phải giọng người đọc bình thường).
+const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Good News|Hysterical|Jester|Organ|Pipe Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Junior|Ralph|Fred|Kathy|Princess|Eddy|Flo|Grandma|Grandpa|Reed|Rocko|Sandy|Shelley)\b/i;
+const PREFERRED = /Samantha|Ava|Allison|Susan|Zoe|Nicky|Evan|Nathan|Tom|Aaron|Aria|Jenny|Guy|Google US/i;
 function loadVoices() {
-  voices = speechSynthesis.getVoices().filter(v => /^en[-_]/i.test(v.lang));
+  voices = speechSynthesis.getVoices().filter(v => /^en[-_]/i.test(v.lang) && !NOVELTY.test(v.name));
   if (!$('#settings').hidden) renderSettings();
 }
 function getVoice() {
+  const us = voices.filter(v => /en[-_]US/i.test(v.lang));
   return voices.find(v => v.name === settings.voice)
-    || voices.find(v => /en[-_]US/i.test(v.lang) && /Samantha|Aria|Jenny|Google US/i.test(v.name))
-    || voices.find(v => /en[-_]US/i.test(v.lang)) || voices[0] || null;
+    || us.find(v => PREFERRED.test(v.name) && /Premium|Enhanced|Natural/i.test(v.name))
+    || us.find(v => PREFERRED.test(v.name))
+    || us[0] || voices[0] || null;
 }
 function utter(text, rate) {
   const u = new SpeechSynthesisUtterance(text);
@@ -456,14 +487,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('#exportCsv').onclick = exportCsv;
   $('#setKey').onchange = e => { settings.key = e.target.value.trim(); saveSettings(); };
-  $('#setModel').onchange = e => { settings.model = e.target.value.trim() || 'gemini-2.5-flash'; saveSettings(); };
+  $('#setModel').onchange = e => { settings.model = e.target.value.trim() || DEFAULT_MODEL; saveSettings(); };
   $('#setVoice').onchange = e => { settings.voice = e.target.value; saveSettings(); };
   $('#setVi').onchange = e => { settings.showVi = e.target.checked; saveSettings(); applyVi(); };
   $('#testVoice').onclick = () => speakOnce('Hello! This is how I will read your lessons.');
   $('#testKey').onclick = async () => {
-    settings.key = $('#setKey').value.trim(); settings.model = $('#setModel').value.trim() || 'gemini-2.5-flash'; saveSettings();
+    settings.key = $('#setKey').value.trim(); settings.model = $('#setModel').value.trim() || DEFAULT_MODEL; saveSettings();
     if (!settings.key) { toast('Chưa nhập khóa.'); return; }
-    try { const r = await gemini('Trả về JSON {"ok": true}'); toast(r && r.ok ? 'Khóa hoạt động tốt.' : 'Khóa phản hồi bất thường.'); }
+    try { const r = await gemini('Trả về JSON {"ok": true}'); toast(r && r.ok ? 'Khóa hoạt động tốt (mô hình ' + settings.model + ').' : 'Khóa phản hồi bất thường.'); }
     catch (e) { toast('Khóa lỗi: ' + e.message); }
   };
 
