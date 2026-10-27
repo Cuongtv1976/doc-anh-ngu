@@ -1,6 +1,6 @@
 ﻿// Ưu tiên mạng (luôn lấy bản mới nhất), mất mạng thì dùng bản đã lưu.
-const CACHE = 'doc-anh-ngu-v0.5';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'doc-anh-ngu-v0.6';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'tts-worker.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
