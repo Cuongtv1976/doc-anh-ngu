@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="vi">
 <head>
 <meta charset="utf-8">
@@ -12,9 +12,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=0.9">
+<link rel="stylesheet" href="style.css?v=1.0">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js" defer></script>
-<script src="app.js?v=0.9" defer></script>
+<script src="app.js?v=1.0" defer></script>
 </head>
 <body>
 <header class="top">
@@ -52,6 +52,7 @@
   <input id="progress" type="range" min="0" max="0" value="0" aria-label="Tiến độ">
   <div id="text" class="text"></div>
   <div class="spacer"></div>
+  <canvas id="avatar" width="512" height="512" aria-hidden="true" hidden></canvas>
 </main>
 
 <!-- Sổ từ vựng -->
@@ -83,6 +84,7 @@
   <button id="testVoice" class="btn small">Nghe thử</button>
   <p id="voiceStatus" class="hint" hidden></p>
   <label class="check"><input id="setVi" type="checkbox"> Hiện dòng dịch tiếng Việt</label>
+  <label class="check"><input id="setAvatar" type="checkbox"> Hiện hình động người đọc</label>
   <p class="ver">Phiên bản <span id="ver"></span></p>
 </main>
 

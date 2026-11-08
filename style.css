@@ -10,11 +10,15 @@
   --cur: #fff1c2;
   --word: #ffd76a;
   --sel: #e9dcff;
+  --note-bg: #ffffff;
+  --note-ink: #111;
+  --marker: #ffd60a;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #17151a; --card: #211e25; --ink: #f1ece4; --muted: #a59d92; --line: #36313c;
     --vi: #c4a1ff; --accent: #8b5cf6; --cur: #3a3220; --word: #8a6a10; --sel: #3d2f5c;
+    --note-bg: #000; --note-ink: #f2f2f2;
   }
 }
 * { box-sizing: border-box; }
@@ -77,6 +81,24 @@ input:not([type]), input[type=password], textarea, select {
 .w.reading { background: var(--word); }
 .w.sel { background: var(--sel); box-shadow: 0 0 0 2px var(--sel); }
 .spacer { height: 160px; }
+
+/* Màn hình đọc kiểu Ghi chú iPhone (theo clip mẫu): nền trắng, chữ không chân, từ đang đọc tô vàng như bút dạ quang. */
+body.in-reader, body.in-reader .top { background: var(--note-bg); }
+#reader .en { font-family: -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-size: 1.2rem; line-height: 1.5; color: var(--note-ink); }
+#reader .sent { scroll-margin-top: 90px; }
+#reader .w.reading { background: var(--marker); color: #000; box-shadow: 0 0 0 2px var(--marker); border-radius: 5px; }
+/* Tắt dòng dịch: các câu chạy liền thành đoạn văn như trong clip. */
+.hide-vi #reader .sent { display: inline; padding: 0; margin: 0; background: none; border-radius: 0; }
+.hide-vi #reader .sent .en { display: inline; }
+.hide-vi #reader .sent .en::after { content: " "; }
+.hide-vi #reader .sent.newpara::before { content: "\A\A"; white-space: pre; }
+/* Hình động người đọc: hình tròn nổi ở góc dưới, không chặn việc chạm vào chữ. */
+#avatar {
+  position: fixed; right: 14px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 5;
+  width: 132px; height: 132px; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 6px 22px rgba(0,0,0,.28); background: #9ccbe0;
+}
+@media (min-width: 700px) { #avatar { width: 170px; height: 170px; right: 24px; } }
 
 #player {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;

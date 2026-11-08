@@ -1,5 +1,5 @@
-﻿'use strict';
-const APP_VERSION = '0.9';
+'use strict';
+const APP_VERSION = '1.0';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -81,6 +81,8 @@ function show(view) {
   if (view === 'library') renderLibrary();
   if (view === 'vocab') renderVocab();
   if (view === 'settings') renderSettings();
+  document.body.classList.toggle('in-reader', view === 'reader');
+  startAvatar();
   window.scrollTo(0, 0);
 }
 
@@ -478,7 +480,7 @@ async function speakOnce(text, rate) {
       let pcm = wordClips.get(k);
       if (!pcm) { pcm = await synth(text, true); wordClips.set(k, pcm); if (wordClips.size > 200) wordClips.delete(wordClips.keys().next().value); }
       if (id !== runId) return;
-      auMode = 'word'; seg = null;
+      auMode = 'word'; seg = null; wordEnv = envOf([pcm]);
       setAuSrc(wavUrl([pcm]));
       au.playbackRate = rate || settings.rate;
       au.play().catch(() => {});
@@ -673,20 +675,25 @@ async function aiPlayFrom(from) {
   }
   if (!offs.length) return;
   if (!preparing || clips.size >= S.length) auMsg('');
-  seg = { offs }; auMode = 'lesson'; switchedAt = Date.now();
+  seg = { offs, env: envOf(parts) }; auMode = 'lesson'; switchedAt = Date.now();
   setAuSrc(wavUrl(parts));
   au.playbackRate = settings.rate;
   setPos(from);
   try { await au.play(); } catch (e) { if (id === runId) { playing = false; updatePlay(); toast('Không phát được âm thanh: ' + e.message); } }
   mediaSession();
 }
-au.addEventListener('timeupdate', () => {
+// Tô câu/từ theo vị trí đang phát. Gọi cả từ vòng vẽ hình động (60 lần/giây) để từ được tô chạy mượt như clip mẫu.
+let lastMark = '';
+function syncLesson() {
   if (auMode !== 'lesson' || !seg || !current) return;
   const t = au.currentTime, o = seg.offs.filter(x => x.start <= t + 0.05).pop() || seg.offs[0];
   if (o.i !== current.pos) setPos(o.i);
   const len = current.sentences[o.i].en.length;
-  markWord(t >= o.end ? -1 : Math.floor((t - o.start) / (o.end - o.start) * len));
-});
+  const ci = t >= o.end ? -1 : Math.floor((t - o.start) / (o.end - o.start) * len);
+  const k = o.i + '|' + ci;
+  if (k !== lastMark) { lastMark = k; markWord(ci); }
+}
+au.addEventListener('timeupdate', syncLesson);
 au.addEventListener('ended', () => {
   if (auMode !== 'lesson' || !playing || !seg) return;
   const next = seg.offs[seg.offs.length - 1].i + 1;
@@ -750,7 +757,8 @@ function setPos(i, scroll = true) {
   document.querySelectorAll('.sent.cur').forEach(x => x.classList.remove('cur'));
   markWord(-1);
   const d = document.querySelector(`.sent[data-i="${i}"]`);
-  if (d) { d.classList.add('cur'); if (scroll) d.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+  // Giữ câu đang đọc ở phần trên màn hình (như clip mẫu), chừa chỗ cho hình động ở góc dưới.
+  if (d) { d.classList.add('cur'); if (scroll) d.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
 }
 function markWord(ci) {
   document.querySelectorAll('.w.reading').forEach(x => x.classList.remove('reading'));
@@ -787,7 +795,10 @@ function play() {
   if (finished) { current.pos = 0; finished = false; }
   playing = true; updatePlay();
   // Giọng AI đang tạm dừng giữa chừng: phát tiếp đúng chỗ.
-  if (isAi() && auMode === 'lesson' && seg && au.paused && !au.ended && seg.offs.some(o => o.i === current.pos)) {
+  const o = isAi() && auMode === 'lesson' && seg && au.paused && !au.ended && seg.offs.find(x => x.i === current.pos);
+  if (o) {
+    // Anh đã chuyển sang câu khác trong lúc dừng: tua tới đầu câu đó.
+    if (au.currentTime < o.start - 0.05 || au.currentTime > o.end + 0.3) au.currentTime = o.start;
     switchedAt = Date.now(); au.play().catch(() => {}); return;
   }
   speakSentence();
@@ -936,6 +947,7 @@ function renderSettings() {
   $('#setKey').value = settings.key;
   $('#setModel').value = settings.model || DEFAULT_MODEL;
   $('#setVi').checked = settings.showVi;
+  $('#setAvatar').checked = settings.showAvatar !== false;
   const sel = $('#setVoice'); sel.textContent = '';
   const ga = el('optgroup'); ga.label = 'Giọng AI — giống người, đọc khi tắt màn hình';
   for (const [id, name] of AI_VOICES) {
@@ -956,6 +968,100 @@ function renderSettings() {
   $('#ver').textContent = APP_VERSION;
 }
 function applyVi() { document.body.classList.toggle('hide-vi', !settings.showVi); }
+
+// ---------- Hình động người đọc (ảnh của anh, miệng mấp máy theo tiếng đọc) ----------
+// Tọa độ trên avatar.jpg (512×512): tâm hai mắt, giữa đường môi, độ rộng miệng, cằm.
+const AV = { eyes: [[200, 207], [318, 216]], mouth: [270, 328], mouthW: 96, chin: 425 };
+const ENV_RATE = 50; // số mẫu độ to/giây
+// Độ to của tiếng theo thời gian (0..1) để miệng mở to nhỏ đúng lúc đọc.
+function envOf(parts) {
+  const step = Math.round(SR / ENV_RATE), out = [];
+  let sum = 0, n = 0;
+  for (const p of parts) for (let i = 0; i < p.length; i++) {
+    sum += p[i] * p[i];
+    if (++n === step) { out.push(Math.min(1, Math.pow(Math.sqrt(sum / n) / 5000, 0.7))); sum = 0; n = 0; }
+  }
+  return Float32Array.from(out);
+}
+let wordEnv = null;
+const avImg = new Image();
+let avJaw = null, avOpen = 0, avBlink = 0, avNextBlink = 0, avRaf = 0;
+avImg.onload = () => {
+  // Phần hàm dưới (từ môi dưới tới cằm), mờ dần ở mép để ghép lại không lộ đường cắt.
+  const w = 200, h = AV.chin + 40 - AV.mouth[1], x0 = AV.mouth[0] - w / 2;
+  avJaw = document.createElement('canvas'); avJaw.width = w; avJaw.height = h;
+  const c = avJaw.getContext('2d');
+  c.drawImage(avImg, x0, AV.mouth[1], w, h, 0, 0, w, h);
+  c.globalCompositeOperation = 'destination-in';
+  const gx = c.createLinearGradient(0, 0, w, 0);
+  gx.addColorStop(0, 'rgba(0,0,0,0)'); gx.addColorStop(0.25, '#000'); gx.addColorStop(0.75, '#000'); gx.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = gx; c.fillRect(0, 0, w, h);
+  const gy = c.createLinearGradient(0, 0, 0, h);
+  gy.addColorStop(0, '#000'); gy.addColorStop(0.6, '#000'); gy.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = gy; c.fillRect(0, 0, w, h);
+};
+avImg.src = 'avatar.jpg';
+// Mức mở miệng mong muốn lúc này.
+function avTarget(t) {
+  if (!playing) return 0;
+  if (auMode === 'lesson' && seg && seg.env && !au.paused) return seg.env[Math.floor(au.currentTime * ENV_RATE)] || 0;
+  if (auMode === 'word' && wordEnv && !au.paused) return wordEnv[Math.floor(au.currentTime * ENV_RATE)] || 0;
+  // Giọng của máy: không lấy được độ to, mô phỏng nhịp nói.
+  if (window.speechSynthesis && speechSynthesis.speaking) return 0.25 + 0.5 * Math.abs(Math.sin(t / 95) * Math.sin(t / 61));
+  return 0;
+}
+function drawAvatar(t) {
+  const cv = $('#avatar'), c = cv.getContext('2d');
+  if (!avImg.complete || !avImg.naturalWidth) return;
+  avOpen += (avTarget(t) - avOpen) * 0.45;
+  c.save();
+  // Đầu lắc rất nhẹ và "thở" để ảnh không đứng im.
+  c.translate(256, 300);
+  c.rotate(Math.sin(t / 1400) * 0.012 + avOpen * 0.01);
+  const z = 1.05 + Math.sin(t / 2300) * 0.006;
+  c.scale(z, z);
+  c.translate(-256, -300 - avOpen * 2);
+  c.drawImage(avImg, 0, 0, 512, 512);
+  // Miệng: môi dưới và cằm hạ xuống theo độ to của tiếng — hạ nhiều ở giữa, khóe miệng giữ nguyên.
+  const d = avOpen * 16;
+  if (d > 0.6 && avJaw) {
+    const [mx, my] = AV.mouth, hw = AV.mouthW / 2;
+    const prof = x => { const u = (x - mx) / (hw * 1.1); return Math.abs(u) >= 1 ? 0 : 1 - u * u; };
+    // Khoang miệng tối, có viền răng trên khi mở rộng.
+    c.beginPath(); c.moveTo(mx - hw, my);
+    for (let x = mx - hw; x <= mx + hw; x += 3) c.lineTo(x, my - d * 0.06 * prof(x));
+    for (let x = mx + hw; x >= mx - hw; x -= 3) c.lineTo(x, my + d * prof(x));
+    c.closePath();
+    c.fillStyle = '#2b0f0d'; c.fill();
+    if (d > 5) {
+      c.save(); c.clip();
+      c.fillStyle = 'rgba(236,228,218,.85)'; c.fillRect(mx - hw * 0.62, my - 2, hw * 1.24, Math.min(d * 0.28, 4));
+      c.restore();
+    }
+    // Hàm dưới vẽ theo từng dải dọc 3 px, mỗi dải hạ theo hình cong của môi.
+    const x0 = mx - avJaw.width / 2;
+    for (let sx = 0; sx < avJaw.width; sx += 3) c.drawImage(avJaw, sx, 0, 3, avJaw.height, x0 + sx, my + d * prof(x0 + sx + 1.5), 3, avJaw.height);
+  }
+  // Chớp mắt: kéo vùng da ngay trên mắt phủ xuống mắt trong chốc lát.
+  if (t > avNextBlink) { avBlink = t; avNextBlink = t + 2500 + Math.random() * 3000; }
+  const b = (t - avBlink) / 160;
+  if (b < 1) {
+    const k = Math.sin(b * Math.PI);
+    for (const [ex, ey] of AV.eyes) c.drawImage(avImg, ex - 30, ey - 26, 60, 10, ex - 30, ey - 17, 60, 26 * k);
+  }
+  c.restore();
+}
+function avatarLoop(t) {
+  avRaf = 0;
+  if ($('#reader').hidden || document.hidden) return;
+  syncLesson();
+  if (settings.showAvatar !== false) drawAvatar(t);
+  avRaf = requestAnimationFrame(avatarLoop);
+}
+function startAvatar() {
+  $('#avatar').hidden = settings.showAvatar === false || $('#reader').hidden;
+  if (!avRaf && !$('#reader').hidden) avRaf = requestAnimationFrame(avatarLoop);
+}
 
 // ---------- Gắn sự kiện ----------
 document.addEventListener('DOMContentLoaded', () => {
@@ -1003,6 +1109,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isAi()) loadTts().catch(() => {}); else voiceMsg('');
   };
   $('#setVi').onchange = e => { settings.showVi = e.target.checked; saveSettings(); applyVi(); };
+  $('#setAvatar').onchange = e => { settings.showAvatar = e.target.checked; saveSettings(); startAvatar(); };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) startAvatar(); });
   $('#testVoice').onclick = async () => {
     unlockAudio();
     if (isAi() && !tts) { try { await loadTts(); } catch (e) { /* dùng giọng máy */ } }
