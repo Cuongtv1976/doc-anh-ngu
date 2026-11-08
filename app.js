@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '1.0';
+const APP_VERSION = '1.1';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 const $ = (s) => document.querySelector(s);
@@ -965,7 +965,8 @@ function renderSettings() {
     gs.appendChild(o);
   }
   if (voices.length) sel.appendChild(gs);
-  $('#ver').textContent = APP_VERSION;
+  let e = ''; try { e = localStorage.getItem('eh.avErr') || ''; } catch (x) { /* bỏ qua */ }
+  $('#ver').textContent = APP_VERSION + (e ? ' · lỗi hình động: ' + e : '');
 }
 function applyVi() { document.body.classList.toggle('hide-vi', !settings.showVi); }
 
@@ -985,7 +986,7 @@ function envOf(parts) {
 }
 let wordEnv = null;
 const avImg = new Image();
-let avJaw = null, avOpen = 0, avBlink = 0, avNextBlink = 0, avRaf = 0;
+let avJaw = null, avOpen = 0, avBlink = 0, avNextBlink = 0, avRaf = 0, avErr = '';
 avImg.onload = () => {
   // Phần hàm dưới (từ môi dưới tới cằm), mờ dần ở mép để ghép lại không lộ đường cắt.
   const w = 200, h = AV.chin + 40 - AV.mouth[1], x0 = AV.mouth[0] - w / 2;
@@ -1040,22 +1041,30 @@ function drawAvatar(t) {
     }
     // Hàm dưới vẽ theo từng dải dọc 3 px, mỗi dải hạ theo hình cong của môi.
     const x0 = mx - avJaw.width / 2;
-    for (let sx = 0; sx < avJaw.width; sx += 3) c.drawImage(avJaw, sx, 0, 3, avJaw.height, x0 + sx, my + d * prof(x0 + sx + 1.5), 3, avJaw.height);
+    // Safari báo lỗi nếu vùng cắt vượt ra ngoài ảnh: dải cuối lấy đúng phần còn lại.
+    for (let sx = 0; sx < avJaw.width; sx += 3) {
+      const w = Math.min(3, avJaw.width - sx);
+      c.drawImage(avJaw, sx, 0, w, avJaw.height, x0 + sx, my + d * prof(x0 + sx + 1.5), w, avJaw.height);
+    }
   }
   // Chớp mắt: kéo vùng da ngay trên mắt phủ xuống mắt trong chốc lát.
   if (t > avNextBlink) { avBlink = t; avNextBlink = t + 2500 + Math.random() * 3000; }
   const b = (t - avBlink) / 160;
-  if (b < 1) {
-    const k = Math.sin(b * Math.PI);
-    for (const [ex, ey] of AV.eyes) c.drawImage(avImg, ex - 30, ey - 26, 60, 10, ex - 30, ey - 17, 60, 26 * k);
-  }
+  const k = b < 1 ? Math.sin(b * Math.PI) : 0;
+  // Safari báo lỗi khi vẽ ảnh cao 0 px (đầu và cuối cái chớp mắt) — chỉ vẽ khi đủ cao.
+  if (k > 0.05) for (const [ex, ey] of AV.eyes) c.drawImage(avImg, ex - 30, ey - 26, 60, 10, ex - 30, ey - 17, 60, 26 * k);
   c.restore();
 }
 function avatarLoop(t) {
   avRaf = 0;
   if ($('#reader').hidden || document.hidden) return;
-  syncLesson();
-  if (settings.showAvatar !== false) drawAvatar(t);
+  // Lỗi vẽ trên một máy nào đó không được làm dừng vòng vẽ; ảnh tĩnh nền (CSS) vẫn hiện. Ghi lỗi để xem trong Cài đặt.
+  try {
+    syncLesson();
+    if (settings.showAvatar !== false) drawAvatar(t);
+  } catch (e) {
+    if (!avErr) { avErr = String(e && e.message || e); try { localStorage.setItem('eh.avErr', avErr); } catch (x) { /* bỏ qua */ } }
+  }
   avRaf = requestAnimationFrame(avatarLoop);
 }
 function startAvatar() {

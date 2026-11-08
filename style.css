@@ -96,7 +96,9 @@ body.in-reader, body.in-reader .top { background: var(--note-bg); }
 #avatar {
   position: fixed; right: 14px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 5;
   width: 132px; height: 132px; border-radius: 50%; pointer-events: none;
-  box-shadow: 0 6px 22px rgba(0,0,0,.28); background: #9ccbe0;
+  box-shadow: 0 6px 22px rgba(0,0,0,.28);
+  /* Ảnh tĩnh làm nền: luôn thấy ảnh, kể cả khi trình duyệt không vẽ được phần chuyển động. */
+  background: #9ccbe0 url("avatar.jpg") center / 105% no-repeat;
 }
 @media (min-width: 700px) { #avatar { width: 170px; height: 170px; right: 24px; } }
 
